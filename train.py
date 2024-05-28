@@ -183,7 +183,8 @@ from transformers import Trainer, TrainingArguments
 from datasets import Dataset
 def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, growth_factor,eval_dataset):
     current_params = sum(p.numel() for p in model.parameters())
-    total_doublings = math.ceil(math.log(target_params / current_params, 1.6))
+    total_doublings = math.ceil(math.log(target_params / current_params, 1.5))
+    print(total_doublings)
     initial_subset_size=steps_per_epoch//total_doublings
 
     subset_size = initial_subset_size
@@ -198,6 +199,7 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
 
         for step in range(total_doublings):
             train_subset = Dataset.from_dict(base_dataset[(step)*len(train_dataset)//total_doublings:(step+1)*len(train_dataset)//total_doublings])
+            print(len(train_subset))
             # Train the model on the current subset
             args = TrainingArguments(
                 output_dir=f"./training_outputs/epoch_{epoch}_step_{step}",
@@ -224,7 +226,7 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
             )
 
             trainer.train()
-
+            trainer.save_model(f"{step}-batch")
             # Double the model's parameters
             expand_model_params(model)
             current_params = sum(p.numel() for p in model.parameters())
