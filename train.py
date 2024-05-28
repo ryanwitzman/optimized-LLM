@@ -170,8 +170,8 @@ base_model_config = create_model_config(
     skip_blocks=2,
     expert_layer_period=2
 )
-#model = AnemoneForCausalLM(base_model_config)
-model = AnemoneForCausalLM.from_pretrained("0-batch")
+model = AnemoneForCausalLM(base_model_config)
+#model = AnemoneForCausalLM.from_pretrained("0-batch")
 ### added
 
 expand_model_params(model)
@@ -230,25 +230,38 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
         
         # Data loader for the current subset
 
-        for step in range(1,total_doublings):
+        for step in range(total_doublings):
             train_subset = Dataset.from_dict(base_dataset[(step)*len(train_dataset)//total_doublings:(step+1)*len(train_dataset)//total_doublings])
             print(len(train_subset))
             # Train the model on the current subset
             args = TrainingArguments(
-                output_dir=f"./training_outputs/epoch_{epoch}_step_{step}",
-                num_train_epochs=1,
-                per_device_train_batch_size=batch_size,
-                per_device_eval_batch_size=batch_size,
-                evaluation_strategy="steps",
-                eval_steps=500,
-                logging_steps=10,
-                save_strategy="no",
-                logging_dir="./logs",
-                report_to="none",
-                learning_rate=5e-4,
-                warmup_steps=20,
-                gradient_accumulation_steps=1
-            )
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    gradient_checkpointing=False,
+    gradient_accumulation_steps=1,
+    load_best_model_at_end=False,
+    warmup_steps=20,
+    num_train_epochs=1,
+    report_to=["wandb"],
+    evaluation_strategy="steps",
+    eval_steps=1_000*5//batch_size,
+    learning_rate=5e-4,
+    fp16=not torch.cuda.is_bf16_supported(),
+    bf16=torch.cuda.is_bf16_supported(),
+    bf16_full_eval=torch.cuda.is_bf16_supported(),
+    fp16_full_eval=not torch.cuda.is_bf16_supported(),
+    logging_steps=50 // batch_size,
+    optim="adamw_8bit", # "galaore_adamw_8bit", save 1,5Go of memory for bsz=5 but slower to converge
+    optim_target_modules=["anemone"],
+    max_steps=steps // batch_size,
+    save_total_limit=1,
+    save_strategy="steps",
+    save_steps=10_000,
+    weight_decay=0.02,
+    lr_scheduler_type="linear",
+    output_dir="./trains",
+    run_name=run_name,
+)
 
             trainer = Trainer(
                 model=model,
