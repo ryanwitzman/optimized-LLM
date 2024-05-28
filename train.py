@@ -250,10 +250,9 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
     bf16=torch.cuda.is_bf16_supported(),
     bf16_full_eval=torch.cuda.is_bf16_supported(),
     fp16_full_eval=not torch.cuda.is_bf16_supported(),
-    logging_steps=50 // batch_size,
+    logging_steps=10,
     optim="adamw_8bit", # "galaore_adamw_8bit", save 1,5Go of memory for bsz=5 but slower to converge
     optim_target_modules=["anemone"],
-    max_steps=steps // batch_size,
     save_total_limit=1,
     save_strategy="steps",
     save_steps=10_000,
