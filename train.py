@@ -74,29 +74,33 @@ def create_model_config(hidden_size, num_hidden_layers, intermediate_size, exper
 
 # Function to expand the model's parameters by copying adjacent parameters
 import torch.nn as nn
-
 def expand_model_params(model):
     with torch.no_grad():
-        new_params={}
+        new_params = {}
         for name, param in model.named_parameters():
-            if 'weight' in name and len(param.shape) > 1:  # Assume matrix weights need expansion
-                # Double the appropriate dimension, usually the output features for Linear layers
-                expanded_param = torch.cat([param, param], dim=0)  # Adjust dim as necessary
-                model._parameters[name] = nn.Parameter(expanded_param)
-            elif 'bias' in name:
-                expanded_param = torch.cat([param, param])  # Bias expansion
-                model._parameters[name] = nn.Parameter(expanded_param)
-
-        # Update the model with expanded parameters
-        for full_name, new_param in new_params.items():
-            parts = full_name.split('.')
-            # Navigate to the correct module
+            if 'weight' in name or 'bias' in name:
+                # Expanding the parameter along the 0th dimension
+                expanded_param = torch.cat([param, param], dim=0)
+                new_params[name] = nn.Parameter(expanded_param)
+        
+        # Update the model's parameters
+        for name, new_param in new_params.items():
+            # Split the name to navigate through nested modules
+            name_parts = name.split('.')
+            attr_name = name_parts[-1]
             module = model
-            for part in parts[:-1]:
+            for part in name_parts[:-1]:
                 module = getattr(module, part)
-            # Set the new parameter to the module
-            setattr(module, parts[-1], new_param)
-    return model
+            
+            # Replace the parameter
+            setattr(module, attr_name, new_param)
+            module._parameters[attr_name] = new_param
+
+
+# Example usage:
+# model = YourModel()
+# model = expand_model_params(model)
+
 
 # Usage
 # Assume `model` is your neural network model
@@ -167,7 +171,6 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
     subset_size = initial_subset_size
 
     for epoch in range(num_epochs):
-        # Dynamically create a subset of the dataset
 
         
         # Data loader for the current subset
