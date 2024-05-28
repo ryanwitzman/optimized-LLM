@@ -10,7 +10,7 @@ from layers.mamba import HybridMambaAttentionDynamicCache
 from layers import attention, mamba
 from layers.jetmoe.utils import parallel_experts
 from model.anemone_config import AnemoneConfig
-from model.modeling_anemone import AnemoneForCausalLM
+from model.modeling_anemone import AnemoneForCausalLM, BitLinearNew,AnemoneRMSNorm,AnemoneSparseMoeBlock,AnemoneMambaMixer,JAMBA_ATTENTION_CLASSES,AnemoneAttentionDecoderLayer,AnemoneMambaDecoderLayer
 
 tokenizer = AutoTokenizer.from_pretrained("ai21labs/Jamba-v0.1")
 
@@ -75,31 +75,58 @@ def create_model_config(hidden_size, num_hidden_layers, intermediate_size, exper
 # Function to expand the model's parameters by copying adjacent parameters
 
 
-import torch
-import torch.nn as nn
 
-import torch.nn as nn
 
-import torch
-import torch.nn as nn
+def copy_layer(layer):
+    """
+    A helper function to create a new instance of a layer and copy its state.
+    """
+    # Check the type of the layer and create a new instance accordingly
+    if isinstance(layer, nn.Linear):
+        new_layer = nn.Linear(layer.in_features, layer.out_features, layer.bias is not None)
+    elif isinstance(layer, nn.Conv2d):
+        new_layer = nn.Conv2d(layer.in_channels, layer.out_channels, layer.kernel_size, layer.stride, layer.padding, layer.dilation, layer.groups, layer.bias is not None, layer.padding_mode)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        new_layer = nn.ConvTranspose2d(layer.in_channels, layer.out_channels, layer.kernel_size, layer.stride, layer.padding, layer.output_padding, layer.groups, layer.bias is not None, layer.dilation, layer.padding_mode)
+    elif isinstance(layer, nn.BatchNorm2d):
+        new_layer = nn.BatchNorm2d(layer.num_features)
+    elif isinstance(layer, nn.ReLU):
+        new_layer = nn.ReLU(inplace=layer.inplace)
+    elif isinstance(layer, BitLinearNew):
+        new_layer = BitLinearNew(layer.in_features, layer.out_features, layer.bias is not None)
+    elif isinstance(layer, AnemoneRMSNorm):
+        new_layer = AnemoneRMSNorm(layer.normalized_shape, layer.eps)
+    elif isinstance(layer, AnemoneSparseMoeBlock):
+        new_layer = AnemoneSparseMoeBlock(layer.config, layer.num_experts, layer.num_experts_per_tok)
+    elif isinstance(layer, AnemoneMambaMixer):
+        new_layer = AnemoneMambaMixer(config=layer.config, layer_idx=layer.layer_idx)
+    elif isinstance(layer, JAMBA_ATTENTION_CLASSES[layer.config._attn_implementation]):
+        new_layer = JAMBA_ATTENTION_CLASSES[layer.config._attn_implementation](layer.config, layer.layer_idx)
+    elif isinstance(layer, AnemoneAttentionDecoderLayer):
+        new_layer = AnemoneAttentionDecoderLayer(layer.config, layer.num_experts, layer.layer_idx)
+    elif isinstance(layer, AnemoneMambaDecoderLayer):
+        new_layer = AnemoneMambaDecoderLayer(layer.config, layer.num_experts, layer.layer_idx)
+    else:
+        raise ValueError(f"Layer type {type(layer)} is not supported. Add it to the copy_layer function.")
 
-import torch
-import torch.nn as nn
-from copy import deepcopy
+    # Copy the state_dict from the original layer to the new layer
+    new_layer.load_state_dict(layer.state_dict())
+    return new_layer
+
 
 def expand_model_params(model):
-    # Create a list to hold new layers
-    new_layers = []
-
     # Iterate over the named children of the model
     for name, module in model.named_children():
         # Check if the module is a nn.ModuleList (commonly used for stacking layers)
         if isinstance(module, nn.ModuleList):
+            # Create a list to hold new layers
+            new_layers = []
             for layer in module:
-                # Copy the layer
-                new_layer = deepcopy(layer)
-                # Add both the original and the new layer to the new_layers list
+                # Add the original layer to the new_layers list
                 new_layers.append(layer)
+                # Create a new instance of the same layer type
+                new_layer = copy_layer(layer)
+                # Add the new layer to the new_layers list
                 new_layers.append(new_layer)
             
             # Replace the original ModuleList with a new one containing the expanded layers
@@ -109,6 +136,7 @@ def expand_model_params(model):
             expand_model_params(module)
     
     return model
+
 
 # Example usage
 # model = AnemoneForCausalLM(base_model_config)
@@ -142,9 +170,13 @@ base_model_config = create_model_config(
     skip_blocks=2,
     expert_layer_period=2
 )
-model = AnemoneForCausalLM(base_model_config)
+#model = AnemoneForCausalLM(base_model_config)
+model = AnemoneForCausalLM.from_pretrained("0-batch")
+### added
 
-param_count=print_nb_trainable_params(model)*2
+expand_model_params(model)
+param_count=print_nb_trainable_params(model)
+
 
 # Training settings
 max_seq_length = 512
@@ -184,6 +216,7 @@ from datasets import Dataset
 def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, growth_factor,eval_dataset):
     current_params = sum(p.numel() for p in model.parameters())
     total_doublings = math.ceil(math.log(target_params / current_params, 1.5))
+    total_doublings=4
     print(total_doublings)
     initial_subset_size=steps_per_epoch//total_doublings
 
@@ -197,7 +230,7 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
         
         # Data loader for the current subset
 
-        for step in range(total_doublings):
+        for step in range(1,total_doublings):
             train_subset = Dataset.from_dict(base_dataset[(step)*len(train_dataset)//total_doublings:(step+1)*len(train_dataset)//total_doublings])
             print(len(train_subset))
             # Train the model on the current subset
