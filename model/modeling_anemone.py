@@ -115,6 +115,8 @@ def load_mod_loss(weights: List[torch.Tensor], topk_indices: List[torch.Tensor],
 class AnemoneAttentionDecoderLayer(nn.Module):
     def __init__(self, config: AnemoneConfig, num_experts: int, layer_idx: int):
         super().__init__()
+        self.config=config
+        self.num_experts=num_experts
         self.layer_idx = layer_idx
         self.self_attn = JAMBA_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
@@ -196,12 +198,12 @@ class AnemoneMambaDecoderLayer(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.mamba = AnemoneMambaMixer(config=config, layer_idx=layer_idx)
-
+        self.num_experts=num_experts
         num_experts_per_tok = config.num_experts_per_tok if num_experts > 1 else 1
         self.moe = AnemoneSparseMoeBlock(config, num_experts=num_experts, num_experts_per_tok=num_experts_per_tok)
         self.input_layernorm = AnemoneRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.pre_moe_layernorm = AnemoneRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
+        self.config=config
     def forward(
             self,
             hidden_states: torch.Tensor,
