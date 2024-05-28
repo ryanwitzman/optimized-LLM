@@ -1,5 +1,4 @@
 import os
-import bitnet
 import numpy as np
 import torch
 from datasets import load_dataset
@@ -10,14 +9,13 @@ from layers.mamba import HybridMambaAttentionDynamicCache
 from layers import attention, mamba
 from layers.jetmoe.utils import parallel_experts
 from model.anemone_config import AnemoneConfig
-from model.modeling_anemone import AnemoneForCausalLM, BitLinearNew,AnemoneRMSNorm,AnemoneSparseMoeBlock,AnemoneMambaMixer,JAMBA_ATTENTION_CLASSES,AnemoneAttentionDecoderLayer,AnemoneMambaDecoderLayer
+from model.modeling_anemone import AnemoneForCausalLM, AnemoneRMSNorm, AnemoneSparseMoeBlock, AnemoneMambaMixer, JAMBA_ATTENTION_CLASSES, AnemoneAttentionDecoderLayer, AnemoneMambaDecoderLayer
 
 tokenizer = AutoTokenizer.from_pretrained("ai21labs/Jamba-v0.1")
 
 os.environ["WANDB_PROJECT"] = "Mixture of mixture (mod, moah moe)"
 
 # BitLinearNew forward method replacement with nn.Linear forward method
-bitnet.BitLinearNew.forward = nn.Linear.forward  # Replace all bitlinear to classic linear
 
 def print_nb_trainable_params(model):
     bf16 = 0
@@ -28,7 +26,7 @@ def print_nb_trainable_params(model):
         else:
             other += np.prod(param.shape)
     print(f"Attn + Mamba: {bf16 / 1_000_000}M, Other: {other / 1_000_000}M, Total: {(bf16 + other) / 1_000_000}M")
-    return bf16+other
+    return bf16 + other
 
 # Function to create the model configuration
 def create_model_config(hidden_size, num_hidden_layers, intermediate_size, expert_num_heads, capacity, skip_blocks, expert_layer_period):
@@ -72,14 +70,9 @@ def create_model_config(hidden_size, num_hidden_layers, intermediate_size, exper
         vocab_size=tokenizer.vocab_size,
     )
 
-# Function to expand the model's parameters by copying adjacent parameters
-
-
-
-
 def copy_layer(layer):
     """
-    A helper function to create a new instance of a layer and copy its state.
+    A helper function to create a new instance of a layer, copy its state, and cast it to bfloat16.
     """
     # Check the type of the layer and create a new instance accordingly
     if isinstance(layer, nn.Linear):
@@ -92,8 +85,7 @@ def copy_layer(layer):
         new_layer = nn.BatchNorm2d(layer.num_features)
     elif isinstance(layer, nn.ReLU):
         new_layer = nn.ReLU(inplace=layer.inplace)
-    elif isinstance(layer, BitLinearNew):
-        new_layer = BitLinearNew(layer.in_features, layer.out_features, layer.bias is not None)
+
     elif isinstance(layer, AnemoneRMSNorm):
         new_layer = AnemoneRMSNorm(layer.normalized_shape, layer.eps)
     elif isinstance(layer, AnemoneSparseMoeBlock):
@@ -108,11 +100,14 @@ def copy_layer(layer):
         new_layer = AnemoneMambaDecoderLayer(layer.config, layer.num_experts, layer.layer_idx)
     else:
         raise ValueError(f"Layer type {type(layer)} is not supported. Add it to the copy_layer function.")
+    new_layer = new_layer.to(dtype=torch.bfloat16)
 
     # Copy the state_dict from the original layer to the new layer
     new_layer.load_state_dict(layer.state_dict())
-    return new_layer
+    new_layer = new_layer.to(dtype=torch.bfloat16)
 
+    
+    return new_layer
 
 def expand_model_params(model):
     # Iterate over the named children of the model
@@ -137,26 +132,6 @@ def expand_model_params(model):
     
     return model
 
-
-# Example usage
-# model = AnemoneForCausalLM(base_model_config)
-# model = expand_model_params(model)
-
-# Assume this is somewhere in your model setup or training loop after expanding model parameters
-
-# model = YourModel()
-# model = expand_model_params(model)
-
-
-# Usage
-# Assume `model` is your neural network model
-# expand_model_params(model)
-
-
-# Usage
-# Assume `model` is your neural network model
-# expand_model_params(model)
-
 # Initialize the base model
 initial_hidden_size = 1120
 initial_num_hidden_layers = 6
@@ -171,12 +146,9 @@ base_model_config = create_model_config(
     expert_layer_period=2
 )
 model = AnemoneForCausalLM(base_model_config)
-#model = AnemoneForCausalLM.from_pretrained("0-batch")
-### added
 
 expand_model_params(model)
-param_count=print_nb_trainable_params(model)
-
+param_count = print_nb_trainable_params(model)
 
 # Training settings
 max_seq_length = 512
@@ -209,58 +181,48 @@ train_dataset = t_ultra_textbooks.map(tokenize, batched=True, batch_size=10000, 
 eval_dataset = eval_ultra_textbooks.map(tokenize, batched=True, batch_size=10000, remove_columns=eval_ultra_textbooks.column_names)
 
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-import torch
+
 import math
 from transformers import Trainer, TrainingArguments
 from datasets import Dataset
-def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, growth_factor,eval_dataset):
+
+def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, eval_dataset):
     current_params = sum(p.numel() for p in model.parameters())
     total_doublings = math.ceil(math.log(target_params / current_params, 1.5))
-    total_doublings=4
-    print(total_doublings)
-    initial_subset_size=steps_per_epoch//total_doublings
-
-    subset_size = initial_subset_size
+    total_doublings = 4
+    initial_subset_size = steps_per_epoch // total_doublings
 
     for epoch in range(num_epochs):
-
-
-        # Dynamically create a subset of the dataset
-
-        
-        # Data loader for the current subset
-
         for step in range(total_doublings):
             train_subset = Dataset.from_dict(base_dataset[(step)*len(train_dataset)//total_doublings:(step+1)*len(train_dataset)//total_doublings])
             print(len(train_subset))
-            # Train the model on the current subset
+            
             args = TrainingArguments(
-    per_device_train_batch_size=batch_size,
-    per_device_eval_batch_size=batch_size,
-    gradient_checkpointing=False,
-    gradient_accumulation_steps=1,
-    load_best_model_at_end=False,
-    warmup_steps=20,
-    num_train_epochs=1,
-    report_to=["wandb"],
-    evaluation_strategy="steps",
-    eval_steps=1_000*5//batch_size,
-    learning_rate=5e-4,
-    fp16=not torch.cuda.is_bf16_supported(),
-    bf16=torch.cuda.is_bf16_supported(),
-    bf16_full_eval=torch.cuda.is_bf16_supported(),
-    fp16_full_eval=not torch.cuda.is_bf16_supported(),
-    logging_steps=10,
-    optim="adamw_8bit", # "galaore_adamw_8bit", save 1,5Go of memory for bsz=5 but slower to converge
-    optim_target_modules=["anemone"],
-    save_total_limit=1,
-    save_strategy="steps",
-    save_steps=10_000,
-    weight_decay=0.02,
-    lr_scheduler_type="linear",
-    output_dir="./trains",
-    run_name=run_name,
-)
+                per_device_train_batch_size=batch_size,
+                per_device_eval_batch_size=batch_size,
+                gradient_checkpointing=False,
+                gradient_accumulation_steps=1,
+                load_best_model_at_end=False,
+                warmup_steps=20,
+                num_train_epochs=1,
+                report_to=["wandb"],
+                evaluation_strategy="steps",
+                eval_steps=1_000*5//batch_size,
+                learning_rate=5e-4,
+                fp16=False,
+                bf16=True,
+                bf16_full_eval=True,
+                fp16_full_eval=False,
+                logging_steps=10,
+                optim="adamw_8bit",
+                optim_target_modules=["anemone"],
+                save_total_limit=1,
+                save_strategy="steps",
+                save_steps=10_000,
+                weight_decay=0.02,
+                lr_scheduler_type="linear",
+                output_dir="./trains",
+            )
 
             trainer = Trainer(
                 model=model,
@@ -276,10 +238,8 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
             expand_model_params(model)
             current_params = sum(p.numel() for p in model.parameters())
             print_nb_trainable_params(model)
-            # Prepare for the next subset
+
     return model
+
 steps_per_epoch = len(train_dataset) // batch_size
-
-# Assuming `base_dataset` is the complete dataset loaded and preprocessed
-model = train_and_expand_model(model, train_dataset, num_epochs, target_params, steps_per_epoch,2, eval_dataset)
-
+model = train_and_expand_model(model, train_dataset, num_epochs, target_params, steps_per_epoch, eval_dataset)
