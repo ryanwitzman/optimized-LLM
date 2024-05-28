@@ -6,7 +6,7 @@ from datasets import load_dataset
 from torch import nn
 from transformers import Trainer, EvalPrediction
 from transformers import TrainingArguments, DataCollatorForLanguageModeling, AutoTokenizer
-
+from layers.mamba import HybridMambaAttentionDynamicCache
 from layers import attention, mamba
 from layers.jetmoe.utils import parallel_experts
 from model.anemone_config import AnemoneConfig
@@ -73,31 +73,49 @@ def create_model_config(hidden_size, num_hidden_layers, intermediate_size, exper
     )
 
 # Function to expand the model's parameters by copying adjacent parameters
+
+
+import torch
 import torch.nn as nn
+
+import torch.nn as nn
+
+import torch
+import torch.nn as nn
+
+import torch
+import torch.nn as nn
+from copy import deepcopy
+
 def expand_model_params(model):
-    with torch.no_grad():
-        new_params = {}
-        for name, param in model.named_parameters():
-            if 'weight' in name or 'bias' in name:
-                # Expanding the parameter along the 0th dimension
-                expanded_param = torch.cat([param, param], dim=0)
-                new_params[name] = nn.Parameter(expanded_param)
-        
-        # Update the model's parameters
-        for name, new_param in new_params.items():
-            # Split the name to navigate through nested modules
-            name_parts = name.split('.')
-            attr_name = name_parts[-1]
-            module = model
-            for part in name_parts[:-1]:
-                module = getattr(module, part)
+    # Create a list to hold new layers
+    new_layers = []
+
+    # Iterate over the named children of the model
+    for name, module in model.named_children():
+        # Check if the module is a nn.ModuleList (commonly used for stacking layers)
+        if isinstance(module, nn.ModuleList):
+            for layer in module:
+                # Copy the layer
+                new_layer = deepcopy(layer)
+                # Add both the original and the new layer to the new_layers list
+                new_layers.append(layer)
+                new_layers.append(new_layer)
             
-            # Replace the parameter
-            setattr(module, attr_name, new_param)
-            module._parameters[attr_name] = new_param
+            # Replace the original ModuleList with a new one containing the expanded layers
+            setattr(model, name, nn.ModuleList(new_layers))
+        else:
+            # Recursively expand the parameters for sub-modules
+            expand_model_params(module)
+    
+    return model
 
+# Example usage
+# model = AnemoneForCausalLM(base_model_config)
+# model = expand_model_params(model)
 
-# Example usage:
+# Assume this is somewhere in your model setup or training loop after expanding model parameters
+
 # model = YourModel()
 # model = expand_model_params(model)
 
@@ -112,9 +130,9 @@ def expand_model_params(model):
 # expand_model_params(model)
 
 # Initialize the base model
-initial_hidden_size = 128
-initial_num_hidden_layers = 8
-initial_intermediate_size = 512
+initial_hidden_size = 1120
+initial_num_hidden_layers = 6
+initial_intermediate_size = 750
 base_model_config = create_model_config(
     hidden_size=initial_hidden_size,
     num_hidden_layers=initial_num_hidden_layers,
@@ -165,12 +183,15 @@ from transformers import Trainer, TrainingArguments
 from datasets import Dataset
 def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, growth_factor,eval_dataset):
     current_params = sum(p.numel() for p in model.parameters())
-    total_doublings = math.ceil(math.log(target_params / current_params, 3))
+    total_doublings = math.ceil(math.log(target_params / current_params, 1.6))
     initial_subset_size=steps_per_epoch//total_doublings
 
     subset_size = initial_subset_size
 
     for epoch in range(num_epochs):
+
+
+        # Dynamically create a subset of the dataset
 
         
         # Data loader for the current subset
@@ -185,6 +206,7 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
                 per_device_eval_batch_size=batch_size,
                 evaluation_strategy="steps",
                 eval_steps=500,
+                logging_steps=10,
                 save_strategy="no",
                 logging_dir="./logs",
                 report_to="none",
