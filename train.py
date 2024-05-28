@@ -3,8 +3,8 @@ import numpy as np
 import torch
 from datasets import load_dataset
 from torch import nn
-from transformers import Trainer, EvalPrediction
-from transformers import TrainingArguments, DataCollatorForLanguageModeling, AutoTokenizer
+from transformers import Trainer, EvalPrediction, TrainingArguments, DataCollatorForLanguageModeling, AutoTokenizer
+from accelerate import Accelerator  # Import Accelerator
 from layers.mamba import HybridMambaAttentionDynamicCache
 from layers import attention, mamba
 from layers.jetmoe.utils import parallel_experts
@@ -15,7 +15,9 @@ tokenizer = AutoTokenizer.from_pretrained("ai21labs/Jamba-v0.1")
 
 os.environ["WANDB_PROJECT"] = "Mixture of mixture (mod, moah moe)"
 
-# BitLinearNew forward method replacement with nn.Linear forward method
+# Initialize the accelerator
+accelerator = Accelerator()
+dtype = torch.bfloat16  # Define the dtype
 
 def print_nb_trainable_params(model):
     bf16 = 0
@@ -28,7 +30,6 @@ def print_nb_trainable_params(model):
     print(f"Attn + Mamba: {bf16 / 1_000_000}M, Other: {other / 1_000_000}M, Total: {(bf16 + other) / 1_000_000}M")
     return bf16 + other
 
-# Function to create the model configuration
 def create_model_config(hidden_size, num_hidden_layers, intermediate_size, expert_num_heads, capacity, skip_blocks, expert_layer_period):
     return AnemoneConfig(
         attn_layer_offset=5,
@@ -71,10 +72,6 @@ def create_model_config(hidden_size, num_hidden_layers, intermediate_size, exper
     )
 
 def copy_layer(layer):
-    """
-    A helper function to create a new instance of a layer, copy its state, and cast it to bfloat16.
-    """
-    # Check the type of the layer and create a new instance accordingly
     if isinstance(layer, nn.Linear):
         new_layer = nn.Linear(layer.in_features, layer.out_features, layer.bias is not None)
     elif isinstance(layer, nn.Conv2d):
@@ -85,7 +82,6 @@ def copy_layer(layer):
         new_layer = nn.BatchNorm2d(layer.num_features)
     elif isinstance(layer, nn.ReLU):
         new_layer = nn.ReLU(inplace=layer.inplace)
-
     elif isinstance(layer, AnemoneRMSNorm):
         new_layer = AnemoneRMSNorm(layer.normalized_shape, layer.eps)
     elif isinstance(layer, AnemoneSparseMoeBlock):
@@ -101,38 +97,23 @@ def copy_layer(layer):
     else:
         raise ValueError(f"Layer type {type(layer)} is not supported. Add it to the copy_layer function.")
     new_layer = new_layer.to(dtype=torch.bfloat16)
-
-    # Copy the state_dict from the original layer to the new layer
     new_layer.load_state_dict(layer.state_dict())
     new_layer = new_layer.to(dtype=torch.bfloat16)
-
-    
     return new_layer
 
 def expand_model_params(model):
-    # Iterate over the named children of the model
     for name, module in model.named_children():
-        # Check if the module is a nn.ModuleList (commonly used for stacking layers)
         if isinstance(module, nn.ModuleList):
-            # Create a list to hold new layers
             new_layers = []
             for layer in module:
-                # Add the original layer to the new_layers list
                 new_layers.append(layer)
-                # Create a new instance of the same layer type
                 new_layer = copy_layer(layer)
-                # Add the new layer to the new_layers list
                 new_layers.append(new_layer)
-            
-            # Replace the original ModuleList with a new one containing the expanded layers
             setattr(model, name, nn.ModuleList(new_layers))
         else:
-            # Recursively expand the parameters for sub-modules
             expand_model_params(module)
-    
     return model
 
-# Initialize the base model
 initial_hidden_size = 1120
 initial_num_hidden_layers = 6
 initial_intermediate_size = 750
@@ -146,11 +127,12 @@ base_model_config = create_model_config(
     expert_layer_period=2
 )
 model = AnemoneForCausalLM(base_model_config)
-
 expand_model_params(model)
 param_count = print_nb_trainable_params(model)
 
-# Training settings
+# Move model to the correct device and dtype
+model = accelerator.unwrap_model(model).to(dtype=dtype)
+
 max_seq_length = 512
 batch_size = 7
 num_epochs = 1
@@ -183,7 +165,6 @@ eval_dataset = eval_ultra_textbooks.map(tokenize, batched=True, batch_size=10000
 data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
 import math
-from transformers import Trainer, TrainingArguments
 from datasets import Dataset
 
 def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, eval_dataset):
@@ -234,7 +215,6 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
 
             trainer.train()
             trainer.save_model(f"{step}-batch")
-            # Double the model's parameters
             expand_model_params(model)
             current_params = sum(p.numel() for p in model.parameters())
             print_nb_trainable_params(model)
