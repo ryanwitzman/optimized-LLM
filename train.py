@@ -9,12 +9,11 @@ from layers.mamba import HybridMambaAttentionDynamicCache
 from layers import attention, mamba
 from layers.jetmoe.utils import parallel_experts
 from model.anemone_config import AnemoneConfig
-import wandb
+
 from model.modeling_anemone import AnemoneForCausalLM, AnemoneRMSNorm, AnemoneSparseMoeBlock, AnemoneMambaMixer, JAMBA_ATTENTION_CLASSES, AnemoneAttentionDecoderLayer, AnemoneMambaDecoderLayer
 
 tokenizer = AutoTokenizer.from_pretrained("ai21labs/Jamba-v0.1")
 
-os.environ["WANDB_PROJECT"] = "Mixture of mixture (mod, moah moe)"
 
 # Initialize the accelerator
 accelerator = Accelerator()
