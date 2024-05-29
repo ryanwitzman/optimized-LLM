@@ -187,7 +187,7 @@ def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps
                 load_best_model_at_end=False,
                 warmup_steps=20,
                 num_train_epochs=1,
-                #report_to=["wandb"],
+                report_to=["none"],
                 evaluation_strategy="steps",
                 eval_steps=1_000*5//batch_size,
                 learning_rate=5e-4,
