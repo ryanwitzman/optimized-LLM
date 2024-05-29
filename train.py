@@ -103,21 +103,30 @@ def copy_layer(layer):
     return new_layer
 
 def expand_model_params(model):
+    def copy_and_append_layers(layers):
+        new_layers = []
+        for layer in layers:
+            new_layers.append(layer)
+            new_layer = copy_layer(layer)
+            new_layers.append(new_layer)
+        return nn.ModuleList(new_layers)
+
     for name, module in model.named_children():
         if isinstance(module, nn.ModuleList):
-            new_layers = []
-            for layer in module:
-                new_layers.append(layer)
-                new_layer = copy_layer(layer)
-                new_layers.append(new_layer)
-            setattr(model, name, nn.ModuleList(new_layers))
+            expanded_layers = copy_and_append_layers(module)
+            setattr(model, name, expanded_layers)
+        elif isinstance(module, (AnemoneRMSNorm, AnemoneSparseMoeBlock, AnemoneMambaMixer, JAMBA_ATTENTION_CLASSES[base_model_config._attn_implementation], AnemoneAttentionDecoderLayer, AnemoneMambaDecoderLayer)):
+            # Reassign the new copied layer to the model attribute
+            new_layer = copy_layer(module)
+            setattr(model, name, new_layer)
         else:
             expand_model_params(module)
     return model
 
-initial_hidden_size = 1120
+
+initial_hidden_size = int(32*4)
 initial_num_hidden_layers = 6
-initial_intermediate_size = 750
+initial_intermediate_size = 1500
 base_model_config = create_model_config(
     hidden_size=initial_hidden_size,
     num_hidden_layers=initial_num_hidden_layers,
@@ -171,7 +180,6 @@ from datasets import Dataset
 def train_and_expand_model(model, base_dataset, num_epochs, target_params, steps_per_epoch, eval_dataset):
     current_params = sum(p.numel() for p in model.parameters())
     total_doublings = math.ceil(math.log(target_params / current_params, 1.5))
-    total_doublings = 4
     initial_subset_size = steps_per_epoch // total_doublings
 
     for epoch in range(num_epochs):
